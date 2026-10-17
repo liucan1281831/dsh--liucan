@@ -1,5 +1,7 @@
 # DeepSeek Balance Suite for DSH
 
+> 本人写的 DSH 插件，欢迎大佬们多多指正。
+
 为 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) 写的两个插件：
 
 | 插件 | 作用 |
