@@ -1,0 +1,5 @@
+- insert:
+    - id: deepseek-balance
+      name: dsh-plugin-deepseek-balance
+      config:
+        timeoutMs: 15000

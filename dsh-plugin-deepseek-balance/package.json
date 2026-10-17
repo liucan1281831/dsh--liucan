@@ -1,0 +1,22 @@
+{
+  "name": "dsh-plugin-deepseek-balance",
+  "version": "0.1.0",
+  "description": "查询 DeepSeek 账户余额：提供一个宿主工具 deepseek_balance，从环境变量读取 API Key，不落盘、不回显。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./balance": "./lib/balance.js",
+    "./peak": "./lib/peak.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4"
+  },
+  "license": "MIT"
+}

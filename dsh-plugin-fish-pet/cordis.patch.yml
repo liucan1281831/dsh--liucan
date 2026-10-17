@@ -1,0 +1,5 @@
+- insert:
+    - id: fish-pet
+      name: dsh-plugin-fish-pet
+      config:
+        cacheTtlMs: 60000
