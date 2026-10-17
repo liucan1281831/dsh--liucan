@@ -9,7 +9,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-const { BALANCE_PATH, PET_IMG_PATH, createBalanceReader, createBalanceHistory, projectForClient, apply, Config } =
+const { BALANCE_PATH, PET_IMG_PATH, createBalanceReader, createBalanceHistory, projectForClient, apply, Config, KNOWN_CITIES, sniffImageType, sniffSoundType } =
   await import('../index.js')
 
 /** 造一个可控时钟。 */
@@ -45,14 +45,17 @@ test('端点路径形状稳定', () => {
   assert.equal(PET_IMG_PATH, '/api/fish-pet/image')
 })
 
-test('apply 注册余额与图片两个 exact 路由', () => {
+test('apply 注册全部六个 exact 路由', () => {
   const { ctx, routes } = makeCtx()
   apply(ctx, { ...Config(), endpoint: 'http://127.0.0.1:1/x' })
-  assert.equal(routes.length, 2, '应有余额路由 + 图片路由')
-  assert.equal(routes[0].path, BALANCE_PATH)
-  assert.equal(routes[1].path, PET_IMG_PATH)
-  assert.equal(routes[0].kind, 'exact')
-  assert.equal(typeof routes[0].handler, 'function')
+  assert.equal(routes.length, 6, '余额/图片/天气/设置/自定义图/音效')
+  const paths = routes.map(r => r.path)
+  for (const p of ['/api/fish-pet/balance', '/api/fish-pet/image', '/api/fish-pet/weather',
+                   '/api/fish-pet/settings', '/api/fish-pet/custom-image', '/api/fish-pet/sound']) {
+    assert.ok(paths.includes(p), '缺少路由 ' + p)
+  }
+  assert.ok(routes.every(r => r.kind === 'exact'))
+  assert.ok(routes.every(r => typeof r.handler === 'function'))
 })
 
 test('非 GET 方法返回 405 且不查询余额', async () => {
@@ -229,4 +232,95 @@ test('projectForClient 透传 burnRate', () => {
     checkedAt: new Date().toISOString(),
   }, rate)
   assert.deepEqual(p.burnRate, rate)
+})
+
+// ============ 新增：设置与天气纯逻辑 ============
+
+const S = await import('../lib/pet-settings.js')
+
+test('normalizeSettings 夹取越界数值', () => {
+  const s = S.normalizeSettings({ size: 9999, opacity: -3, soundVolume: 42 })
+  assert.equal(s.size, 200)
+  assert.equal(s.opacity, 0)
+  assert.equal(s.soundVolume, 1)
+})
+
+test('normalizeSettings 拒绝危险 URL', () => {
+  for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'https://evil.com/a.png', '//evil.com/x']) {
+    assert.equal(S.normalizeSettings({ customImageUrl: bad }).customImageUrl, '')
+  }
+  const good = '/api/fish-pet/custom-image?v=abc123'
+  assert.equal(S.normalizeSettings({ customImageUrl: good }).customImageUrl, good)
+})
+
+test('normalizeSettings 清洗短语（去空、限长、限量）', () => {
+  const s = S.normalizeSettings({ phrases: ['  hello  ', '', '   ', 'x'.repeat(200), 123] })
+  assert.deepEqual(s.phrases, ['hello', 'x'.repeat(60)])
+})
+
+test('normalizeSettings 丢弃未知字段', () => {
+  const s = S.normalizeSettings({ __proto__: { polluted: true }, evil: 'x' })
+  assert.equal(s.evil, undefined)
+  assert.equal(s.size, S.SETTINGS_DEFAULTS.size)
+})
+
+test('classifyWeatherCode 覆盖主要天气代码', () => {
+  assert.equal(S.classifyWeatherCode(0).key, 'clear')
+  assert.equal(S.classifyWeatherCode(3).key, 'overcast')
+  assert.equal(S.classifyWeatherCode(63).key, 'rain')
+  assert.equal(S.classifyWeatherCode(73).key, 'snow')
+  assert.equal(S.classifyWeatherCode(95).key, 'thunder')
+  assert.equal(S.classifyWeatherCode(999).key, 'unknown')
+})
+
+test('projectWeather 压平上游响应', () => {
+  const p = S.projectWeather({
+    timezone: 'Asia/Shanghai',
+    current: {
+      time: '2026-10-18T02:30',
+      weather_code: 1,
+      temperature_2m: 13.24,
+      relative_humidity_2m: 50.4,
+      wind_speed_10m: 12.34,
+    },
+  })
+  assert.equal(p.ok, true)
+  assert.equal(p.kind, 'mostly-clear')
+  assert.equal(p.temperature, 13.2)
+  assert.equal(p.humidity, 50)
+  assert.equal(p.windSpeed, 12.3)
+})
+
+test('projectWeather 容忍缺字段', () => {
+  const p = S.projectWeather({})
+  assert.equal(p.ok, true)
+  assert.equal(p.temperature, null)
+  assert.equal(p.kind, 'unknown')
+})
+
+test('KNOWN_CITIES 覆盖常见城市且坐标合理', () => {
+  const cities = ['北京', '上海', '广州', '深圳', '杭州']
+  for (const c of cities) {
+    assert.ok(KNOWN_CITIES[c], `缺少 ${c}`)
+    assert.ok(Math.abs(KNOWN_CITIES[c].lat) <= 90)
+    assert.ok(Math.abs(KNOWN_CITIES[c].lon) <= 180)
+  }
+})
+
+test('sniffImageType 按魔数识别真实图片', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  assert.equal(sniffImageType(png), 'image/png')
+  const gif = Buffer.from('GIF89a', 'ascii')
+  assert.equal(sniffImageType(gif), 'image/gif')
+  const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0])
+  assert.equal(sniffImageType(jpg), 'image/jpeg')
+  // 文本伪装成图片
+  assert.equal(sniffImageType(Buffer.from('NOT_AN_IMAGE', 'ascii')), null)
+})
+
+test('sniffSoundType 按魔数识别音频', () => {
+  assert.equal(sniffSoundType(Buffer.from('ID3', 'ascii')), 'audio/mpeg')
+  assert.equal(sniffSoundType(Buffer.from('RIFF0000WAVE', 'ascii')), 'audio/wav')
+  assert.equal(sniffSoundType(Buffer.from('OggS', 'ascii')), 'audio/ogg')
+  assert.equal(sniffSoundType(Buffer.from('plain text', 'ascii')), null)
 })

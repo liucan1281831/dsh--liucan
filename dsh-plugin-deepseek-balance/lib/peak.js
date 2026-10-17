@@ -5,11 +5,16 @@
  *   高峰时段 = 北京时间 周一至周五（不含中国法定节假日） 9:00-12:00、14:00-18:00
  *   空闲时段 = 其余全部时间（含周末与法定节假日全天），价格为高峰的一半
  *
- * 与 cordis 解耦，便于离线单测：给定一个时间点，直接断言判定结果。
+ * 日历数据来自国务院办公厅《关于2026年部分节假日安排的通知》
+ * （国办发明电〔2025〕7号，https://www.gov.cn/zhengce/content/202511/content_7047090.htm）
  *
- * 重要边界：中国法定节假日的具体日期不在本模块硬编码——2026 年除外，
- * 见 HOLIDAYS_2026 注释。未覆盖年份一律按「工作日」推算，并在结果里
- * 明确标注 calendarCovered=false，不假装有完整日历。
+ * 判定优先级（自上而下，先命中先返回）：
+ *   1. 法定节假日            → 空闲（节日当天，含被调休挪用的周末）
+ *   2. 调休上班日            → 按工作日走钟点（周六日也可能进高峰）
+ *   3. 周末                  → 空闲
+ *   4. 工作日                → 按钟点
+ *
+ * 与 cordis 解耦，便于离线单测：给定一个时间点，直接断言判定结果。
  *
  * @module dsh-plugin-deepseek-balance/lib/peak
  */
@@ -24,18 +29,47 @@ export const PEAK_WINDOWS = [
 ]
 
 /**
- * 已经人工核对过的中国法定节假日（北京时间日期，YYYY-MM-DD）。
+ * 中国法定节假日（按北京时间日期），这些日子全天按空闲时段计费。
  *
- * 只收录官方已公布且落在工作日、会让当天按空闲时段计费的日子。
- * 未列入的年份 = 没有日历数据，peak 判定会退回「按工作日估算」。
- *
- * 目前为空：没有可靠来源可核对 2026 年的完整放假安排，
- * 宁可留空并明确标注，也不填臆测的日期。
+ * 来源：国办发明电〔2025〕7号。只收录放假日期；调休上班日见 WORKDAY_OVERRIDES。
+ * 每条都注明所属节日，便于核对与撤销。
  */
-export const HOLIDAYS = new Set([])
+export const HOLIDAYS = new Set([
+  // 元旦：1月1日（周四）至3日（周六），共3天
+  '2026-01-01', '2026-01-02', '2026-01-03',
+  // 春节：2月15日（周日）至23日（周一），共9天
+  '2026-02-15', '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19',
+  '2026-02-20', '2026-02-21', '2026-02-22', '2026-02-23',
+  // 清明节：4月4日（周六）至6日（周一），共3天
+  '2026-04-04', '2026-04-05', '2026-04-06',
+  // 劳动节：5月1日（周五）至5日（周二），共5天
+  '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05',
+  // 端午节：6月19日（周五）至21日（周日），共3天
+  '2026-06-19', '2026-06-20', '2026-06-21',
+  // 中秋节：9月25日（周五）至27日（周日），共3天
+  '2026-09-25', '2026-09-26', '2026-09-27',
+  // 国庆节：10月1日（周四）至7日（周三），共7天
+  '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05',
+  '2026-10-06', '2026-10-07',
+])
 
-/** 已知日历覆盖的年份。超出范围的年份按工作日估算。 */
-export const COVERED_YEARS = new Set([])
+/**
+ * 调休上班日（按北京时间日期）：官方明确要求上班的周末。
+ * 这些日子即使落在周六周日，也按工作日走高峰钟点。
+ */
+export const WORKDAY_OVERRIDES = new Set([
+  // 元旦调休：1月4日（周日）上班
+  '2026-01-04',
+  // 春节调休：2月14日（周六）、2月28日（周六）上班
+  '2026-02-14', '2026-02-28',
+  // 劳动节调休：5月9日（周六）上班
+  '2026-05-09',
+  // 国庆调休：9月20日（周日）、10月10日（周六）上班
+  '2026-09-20', '2026-10-10',
+])
+
+/** 已收录完整法定节假日安排的年份。超出范围的年份只能按工作日/周末估算。 */
+export const COVERED_YEARS = new Set([2026])
 
 /**
  * 把毫秒时间戳拆成北京时间的日历分量。
@@ -67,7 +101,7 @@ export function beijingParts(timeMs) {
  * @param {number} [timeMs] - UTC 毫秒时间戳，默认当前时刻。
  * @returns {{
  *   phase: 'peak' | 'idle',
- *   reason: 'weekend' | 'holiday' | 'peak-window' | 'off-window',
+ *   reason: 'weekend' | 'holiday' | 'peak-window' | 'off-window' | 'makeup-workday',
  *   calendarCovered: boolean,
  *   dateKey: string,
  *   weekday: number,
@@ -86,30 +120,45 @@ export function resolvePhase(timeMs = Date.now()) {
     minute: parts.minute,
     calendarCovered,
   }
+  const isWeekend = parts.weekday >= 6
+  const inPeakWindow = PEAK_WINDOWS.some(
+    ([start, end]) => parts.hour >= start && parts.hour < end,
+  )
 
-  // 周末整天空闲，优先级最高
-  if (parts.weekday >= 6) {
-    return { ...base, phase: 'idle', reason: 'weekend', discount: 0.5 }
-  }
-  // 已知日历里的法定节假日整天空闲
+  // 1. 法定节假日：整天空闲（优先于调休，正常不会重叠）
   if (HOLIDAYS.has(parts.dateKey)) {
     return { ...base, phase: 'idle', reason: 'holiday', discount: 0.5 }
   }
-  // 工作日按钟点判断
-  const inPeak = PEAK_WINDOWS.some(([start, end]) => parts.hour >= start && parts.hour < end)
+
+  // 2. 调休上班日：按工作日走钟点，工作日也可能被调成休息、周末也可能上班
+  if (WORKDAY_OVERRIDES.has(parts.dateKey)) {
+    return {
+      ...base,
+      phase: inPeakWindow ? 'peak' : 'idle',
+      reason: inPeakWindow ? 'makeup-workday' : 'off-window',
+      discount: inPeakWindow ? 1 : 0.5,
+    }
+  }
+
+  // 3. 周末：整天空闲
+  if (isWeekend) {
+    return { ...base, phase: 'idle', reason: 'weekend', discount: 0.5 }
+  }
+
+  // 4. 普通工作日：按钟点判断
   return {
     ...base,
-    phase: inPeak ? 'peak' : 'idle',
-    reason: inPeak ? 'peak-window' : 'off-window',
-    discount: inPeak ? 1 : 0.5,
+    phase: inPeakWindow ? 'peak' : 'idle',
+    reason: inPeakWindow ? 'peak-window' : 'off-window',
+    discount: inPeakWindow ? 1 : 0.5,
   }
 }
 
 /**
  * 距下一次时段切换还有多少毫秒。
  *
- * 只按钟点与星期推算下一个边界；节假日边界无法在不完整日历下精确给出，
- * 因此当结果跨越节假日时以日历覆盖标记提示调用方。
+ * 按分钟向前试探，最多找 14 天（覆盖最长春节假期），
+ * 因此节假日边界也能正确跨过，不依赖「只看下一个钟点」的近似。
  *
  * @param {number} [timeMs] - UTC 毫秒时间戳，默认当前时刻。
  * @returns {{ phase: 'peak' | 'idle', nextPhase: 'peak' | 'idle', nextChangeMs: number }}
@@ -117,8 +166,7 @@ export function resolvePhase(timeMs = Date.now()) {
 export function untilNextChange(timeMs = Date.now()) {
   const current = resolvePhase(timeMs)
   const step = 60 * 1000
-  const horizon = 7 * 24 * 60 * 60 * 1000
-  // 逐分钟往前找第一个 phase 不同的时刻；最多找 7 天
+  const horizon = 14 * 24 * 60 * 60 * 1000
   for (let offset = step; offset <= horizon; offset += step) {
     const probe = resolvePhase(timeMs + offset)
     if (probe.phase !== current.phase) {
@@ -156,6 +204,21 @@ export function formatDuration(ms) {
 }
 
 /**
+ * 判定依据的中文说明，用于让用户知道为什么是这个结果。
+ * @param {ReturnType<typeof resolvePhase>} current
+ * @returns {string}
+ */
+export function reasonText(current) {
+  switch (current.reason) {
+    case 'holiday': return '法定节假日'
+    case 'weekend': return '周末'
+    case 'makeup-workday': return '调休上班日'
+    case 'peak-window': return '工作日高峰时段'
+    default: return '工作日非高峰时段'
+  }
+}
+
+/**
  * 生成一句人类可读的时段摘要。
  * @param {number} [timeMs]
  * @returns {string}
@@ -163,10 +226,13 @@ export function formatDuration(ms) {
 export function describePhase(timeMs = Date.now()) {
   const current = resolvePhase(timeMs)
   const next = untilNextChange(timeMs)
-  const head = `${phaseLabel(current.phase)}（${current.phase === 'peak' ? '标准价' : '半价'}）`
+  const price = current.phase === 'peak' ? '标准价' : '半价'
+  const head = `${phaseLabel(current.phase)}（${price}，${reasonText(current)}）`
   const tail = next.nextChangeMs > 0
     ? `，距${phaseLabel(next.nextPhase)}还有 ${formatDuration(next.nextChangeMs)}`
     : ''
-  const caveat = current.calendarCovered ? '' : '；本年度节假日日历未覆盖，仅按工作日/周末估算'
+  const caveat = current.calendarCovered
+    ? ''
+    : `；${current.dateKey.slice(0, 4)} 年节假日日历未收录，仅按工作日/周末估算`
   return `${head}${tail}${caveat}`
 }

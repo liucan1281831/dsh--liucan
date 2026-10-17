@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-fish-pet",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "桌面小鱼宠物：悬浮在 DSH 界面右下角，实时显示 DeepSeek 余额，可拖动、可隐藏，点击可刷新。",
   "private": true,
   "type": "module",
@@ -16,7 +16,9 @@
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-layout"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
     }
   },
   "peerDependencies": {

@@ -24,3 +24,7 @@ Thumbs.db
 dist/
 coverage/
 *.tgz
+
+# 桌宠运行时数据（用户设置与上传的图片/音效）
+.data/
+**/.data/
