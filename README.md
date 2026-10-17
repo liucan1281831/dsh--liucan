@@ -46,6 +46,25 @@ Agent 可以直接调用，返回结构化数据：
 - 右上角 `×` 收起为一个小把手
 - **设置 → 通用** 里有「余额桌宠」开关，改完立即生效
 
+### 消耗速率估算 🆕
+
+桌宠会记住最近若干次余额采样，估算**按当前速度还能用多久**，显示在余额下方（例如「约剩 2天1小时」，悬停可看平均消耗与采样数）。
+
+设计上刻意保守：
+
+- **只在余额确实下降过时才给结论。** 余额上涨（充值）、持平，或采样不足（少于 2 次、时间跨度 < 1 分钟）时**不显示**，绝不编造一个数字。
+- 采样只在内存里滚动（默认保留最近 60 个），**不落盘、不上传**。
+- 重启 DSH 后重新积累。
+
+### 余额变化动画 🆕
+
+刷新后若余额发生变化，数字会短暂变色并轻微放大：
+
+- **减少** → 红色一闪（让「钱在减少」看得见）
+- **增加** → 绿色一闪
+
+变化幅度小于 0.005 元不触发，避免浮点噪音。
+
 ### 峰谷时段规则
 
 按 DeepSeek 官方定价：
@@ -186,6 +205,7 @@ exec node /path/to/dsh/bin.js "$@"
 |---|---|---|
 | `cacheTtlMs` | `60000` | 成功结果的缓存期 |
 | `errorTtlMs` | `10000` | 失败结果缓存期（更短，避免错误态粘住） |
+| `historyCapacity` | `60` | 余额历史采样点数上限（用于消耗速率估算，仅内存） |
 | `timeoutMs` | `15000` | 单次查询超时 |
 | `endpoint` | 官方余额接口 | 可指向自建代理 |
 
@@ -197,10 +217,41 @@ exec node /path/to/dsh/bin.js "$@"
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/api/fish-pet/balance` | 余额 + 时段（`cache-control: no-store`） |
+| `GET` | `/api/fish-pet/balance` | 余额 + 时段 + 消耗速率（`cache-control: no-store`） |
 | `GET` | `/api/fish-pet/image` | 桌宠图片（PNG，缓存 1 天） |
 
 非 `GET` 请求返回 `405`。
+
+`/api/fish-pet/balance` 的响应示例：
+
+```json
+{
+  "ok": true,
+  "isAvailable": true,
+  "currency": "CNY",
+  "total": "50.78",
+  "granted": "0.78",
+  "toppedUp": "50.00",
+  "phase": "idle",
+  "phaseLabel": "空闲时段",
+  "phaseReason": "weekend",
+  "phaseSummary": "空闲时段（半价），距高峰时段还有 31小时36分",
+  "nextPhase": "peak",
+  "nextChangeMs": 113760000,
+  "nextChangeText": "31小时36分",
+  "calendarCovered": false,
+  "burnRate": {
+    "perHour": 0.61,
+    "hoursLeft": 83.2,
+    "sampleCount": 2,
+    "trend": "down",
+    "currency": "CNY"
+  },
+  "fetchedAt": "2026-10-17T17:24:06.872Z"
+}
+```
+
+`burnRate` 为 `null` 或 `trend` 不是 `down` 时，前端不展示估算。
 
 ---
 
@@ -245,7 +296,7 @@ cd dsh-plugin-deepseek-balance && node --test lib/balance.test.js lib/peak.test.
 cd dsh-plugin-fish-pet          && node --test lib/pet.test.js
 ```
 
-覆盖：成功/401/500/坏 JSON/超时/连不上、密钥脱敏、缓存 TTL、并发合并、方法限制、时段边界。
+覆盖：成功/401/500/坏 JSON/超时/连不上、密钥脱敏、缓存 TTL、并发合并、方法限制、时段边界、消耗速率估算（下降/上涨/持平/采样不足/容量滚动）。
 
 ---
 

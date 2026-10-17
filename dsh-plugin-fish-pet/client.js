@@ -21,6 +21,7 @@ window.__ModuleLoader__.load({
       'pet.sadLow': '余额快不够了…',
       'phase.peak': '高峰',
       'phase.idle': '空闲',
+      'burn.left': '约剩 {time}',
       'setting.title': '余额桌宠',
       'setting.desc': '在界面右上角显示小鱼桌宠，实时展示 DeepSeek 余额。',
     }
@@ -41,6 +42,7 @@ window.__ModuleLoader__.load({
       'pet.sadLow': 'Running low…',
       'phase.peak': 'Peak',
       'phase.idle': 'Idle',
+      'burn.left': '~{time} left',
       'setting.title': 'Balance pet',
       'setting.desc': 'Show a fish pet in the top-right corner with your DeepSeek balance.',
     }
@@ -155,6 +157,24 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 把小时数格式化成「X天Y小时」/「X小时Y分」这样的可读时长。
+     * @param {number} hours
+     * @returns {string}
+     */
+    function formatHours(hours) {
+      if (!Number.isFinite(hours) || hours <= 0) return '--'
+      if (hours >= 24) {
+        const d = Math.floor(hours / 24)
+        const h = Math.round(hours % 24)
+        return h > 0 ? `${d}天${h}小时` : `${d}天`
+      }
+      const h = Math.floor(hours)
+      const m = Math.round((hours - h) * 60)
+      if (h === 0) return `${m}分`
+      return m > 0 ? `${h}小时${m}分` : `${h}小时`
+    }
+
+    /**
      * 蓝色女仆肥鱼形象——直接使用用户提供的原图。
      *
      * 图片由插件自身提供：/plugins/dsh-plugin-fish-pet/pet.png（透明背景 PNG）。
@@ -189,6 +209,9 @@ window.__ModuleLoader__.load({
       const globallyEnabled = useEnabled()
       const [state, setState] = React.useState({ status: 'idle', balance: null, error: null })
       const dragRef = React.useRef(null)
+      // 余额变化方向：'down' 短暂闪一下，让「钱在减少」可见
+      const [flash, setFlash] = React.useState(null)
+      const prevTotalRef = React.useRef(null)
 
       // 挂载时注入关键帧
       React.useEffect(() => { ensureStyles() }, [])
@@ -212,6 +235,14 @@ window.__ModuleLoader__.load({
           }
           const result = await response.json()
           if (result && result.ok) {
+            // 余额变化检测：首次不闪烁，之后按增减给出短暂提示
+            const now = Number.parseFloat(result.total)
+            const prev = prevTotalRef.current
+            if (Number.isFinite(now) && Number.isFinite(prev) && Math.abs(now - prev) >= 0.005) {
+              setFlash(now < prev ? 'down' : 'up')
+              window.setTimeout(() => setFlash(null), 1600)
+            }
+            if (Number.isFinite(now)) prevTotalRef.current = now
             setState({ status: 'ready', balance: result, error: null })
           } else {
             setState({
@@ -315,6 +346,17 @@ window.__ModuleLoader__.load({
           }
         : null
 
+      // 消耗速率：仅当后端算出可信结论（trend === 'down'）才展示，不编造数字
+      const burn = state.status === 'ready' ? state.balance?.burnRate : null
+      const burnInfo = burn && burn.trend === 'down' && Number.isFinite(burn.hoursLeft)
+        ? {
+            text: t('burn.left', { time: formatHours(burn.hoursLeft) }),
+            tip: `平均 ${burn.perHour.toFixed(3)} ${state.balance.currency || ''}/小时`
+              + `，按此速度还能用 ${formatHours(burn.hoursLeft)}`
+              + `（基于 ${burn.sampleCount} 次采样）`,
+          }
+        : null
+
       // 隐藏时留一个小把手，避免用户找不到桌宠（贴右上角，与桌宠同侧）
       if (hidden) {
         return h('div', {
@@ -397,12 +439,28 @@ window.__ModuleLoader__.load({
           key: 'amount',
           style: {
             fontSize: 10.5, fontWeight: 600, lineHeight: 1.2,
-            color: state.status === 'ready'
-              ? (lowBalance ? '#d9822b' : '#0a7')
-              : '#999',
+            color: flash === 'down'
+              ? '#e05a5a'
+              : flash === 'up'
+                ? '#2fa37a'
+                : state.status === 'ready'
+                  ? (lowBalance ? '#d9822b' : '#0a7')
+                  : '#999',
             whiteSpace: 'nowrap',
+            // 余额变化时轻微弹一下，避免用户错过
+            transform: flash ? 'scale(1.12)' : 'scale(1)',
+            transition: 'color .3s ease, transform .3s ease',
           },
         }, label),
+        // 消耗速率：还能用多久（采样不足时不显示）
+        burnInfo ? h('div', {
+          key: 'burn',
+          title: burnInfo.tip,
+          style: {
+            fontSize: 9, lineHeight: 1.3, whiteSpace: 'nowrap',
+            color: '#8a8f98',
+          },
+        }, burnInfo.text) : null,
         // 峰谷时段徽标：高峰橙色、空闲绿色，hover 显示完整说明
         phaseInfo ? h('div', {
           key: 'phase',

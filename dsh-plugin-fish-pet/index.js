@@ -45,6 +45,8 @@ export const Config = z.object({
   cacheTtlMs: z.number().min(5000).max(3600000).default(60000),
   /** 失败结果的缓存期（毫秒），比成功短，避免错误态粘住。 */
   errorTtlMs: z.number().min(1000).max(600000).default(10000),
+  /** 余额历史采样点数上限：用于估算消耗速率，只在内存里滚动。 */
+  historyCapacity: z.number().min(2).max(1000).default(60),
   /** 单次查询超时。 */
   timeoutMs: z.number().min(1000).max(60000).default(15000),
   /** 官方余额端点。 */
@@ -94,11 +96,79 @@ export function createBalanceReader(config, now = Date.now) {
 }
 
 /**
+ * 余额变化历史追踪器。
+ *
+ * 目的：回答「余额还剩多少」之外的问题——「按现在的速度还能用多久」。
+ * 只保留最近 N 个采样点，在内存里滚动，不落盘、不上传。
+ *
+ * @param {{ capacity?: number }} [options]
+ * @returns {{ push: (total: number, atMs: number) => void, rate: (currency: string) => object }}
+ */
+export function createBalanceHistory(options = {}) {
+  const capacity = options.capacity ?? 60
+  /** @type {Array<{ total: number, atMs: number }>} */
+  let samples = []
+
+  return {
+    /** 记录一个采样点；同一时刻重复写入会覆盖。 */
+    push(total, atMs) {
+      if (!Number.isFinite(total) || !Number.isFinite(atMs)) return
+      const last = samples[samples.length - 1]
+      if (last && last.atMs === atMs) {
+        last.total = total
+        return
+      }
+      samples.push({ total, atMs })
+      if (samples.length > capacity) samples.shift()
+    },
+
+    /**
+     * 估算消耗速率与剩余可用时长。
+     *
+     * 只在「余额确实下降过」时给出结论；上涨（充值）或数据不足时返回 null，
+     * 不编造一个数字。
+     *
+     * @param {string} currency - 币种，仅用于标签。
+     * @returns {{
+     *   perHour: number | null,
+     *   hoursLeft: number | null,
+     *   sampleCount: number,
+     *   trend: 'down' | 'up' | 'flat' | 'insufficient',
+     *   currency: string,
+     * }}
+     */
+    rate(currency = '') {
+      if (samples.length < 2) {
+        return { perHour: null, hoursLeft: null, sampleCount: samples.length, trend: 'insufficient', currency }
+      }
+      const first = samples[0]
+      const last = samples[samples.length - 1]
+      const elapsedMs = last.atMs - first.atMs
+      // 时间跨度太短会算出荒谬的速率
+      if (elapsedMs < 60 * 1000) {
+        return { perHour: null, hoursLeft: null, sampleCount: samples.length, trend: 'insufficient', currency }
+      }
+      const delta = last.total - first.total
+      const hours = elapsedMs / 3600000
+      if (Math.abs(delta) < 0.0001) {
+        return { perHour: 0, hoursLeft: null, sampleCount: samples.length, trend: 'flat', currency }
+      }
+      if (delta > 0) {
+        return { perHour: null, hoursLeft: null, sampleCount: samples.length, trend: 'up', currency }
+      }
+      const perHour = -delta / hours
+      const hoursLeft = perHour > 0 ? last.total / perHour : null
+      return { perHour, hoursLeft, sampleCount: samples.length, trend: 'down', currency }
+    },
+  }
+}
+
+/**
  * 把查询结果压成前端投影。绝不包含任何密钥字段。
  * @param {object} result - fetchBalance 的结果。
  * @returns {object} 前端可用的纯数据。
  */
-export function projectForClient(result) {
+export function projectForClient(result, rate = null) {
   if (!result || result.ok !== true) {
     return {
       ok: false,
@@ -130,6 +200,8 @@ export function projectForClient(result) {
     nextChangeMs: next.nextChangeMs,
     nextChangeText: next.nextChangeMs > 0 ? formatDuration(next.nextChangeMs) : '',
     calendarCovered: phase.calendarCovered,
+    // 消耗速率（采样不足、余额上涨或持平时为 null，前端据此不展示估算）
+    burnRate: rate,
   }
 }
 
@@ -139,6 +211,8 @@ export function projectForClient(result) {
  */
 export function apply(ctx, config) {
   const read = createBalanceReader(config)
+  // 余额历史只在内存中滚动，用于估算「还能用多久」，不落盘
+  const history = createBalanceHistory({ capacity: config.historyCapacity ?? 60 })
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -152,7 +226,19 @@ export function apply(ctx, config) {
       }
       let payload
       try {
-        payload = projectForClient(await read())
+        const result = await read()
+        let rate = null
+        if (result?.ok === true) {
+          const primary = Array.isArray(result.balances) && result.balances.length > 0
+            ? result.balances[0]
+            : null
+          const total = Number.parseFloat(primary?.total ?? '')
+          if (Number.isFinite(total)) {
+            history.push(total, Date.now())
+            rate = history.rate(primary?.currency ?? '')
+          }
+        }
+        payload = projectForClient(result, rate)
       } catch (error) {
         payload = {
           ok: false,

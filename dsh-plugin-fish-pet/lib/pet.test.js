@@ -9,7 +9,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-const { BALANCE_PATH, PET_IMG_PATH, createBalanceReader, projectForClient, apply, Config } =
+const { BALANCE_PATH, PET_IMG_PATH, createBalanceReader, createBalanceHistory, projectForClient, apply, Config } =
   await import('../index.js')
 
 /** 造一个可控时钟。 */
@@ -177,4 +177,56 @@ test('空闲时段折扣为半价的说明出现在摘要里', () => {
   })
   assert.equal(projected.phase, 'idle')
   assert.equal(projected.phaseReason, 'weekend')
+})
+
+test('createBalanceHistory 在余额下降时估算剩余时长', () => {
+  const h = createBalanceHistory()
+  const t0 = 1_000_000
+  h.push(50, t0)
+  h.push(49, t0 + 3600_000) // 1 小时消耗 1 元
+  const rate = h.rate('CNY')
+  assert.equal(rate.trend, 'down')
+  assert.equal(rate.perHour, 1)
+  assert.equal(rate.hoursLeft, 49)
+  assert.equal(rate.sampleCount, 2)
+})
+
+test('createBalanceHistory 余额上涨时不给估算', () => {
+  const h = createBalanceHistory()
+  h.push(10, 0)
+  h.push(60, 3600_000)
+  const rate = h.rate('CNY')
+  assert.equal(rate.trend, 'up')
+  assert.equal(rate.perHour, null)
+  assert.equal(rate.hoursLeft, null)
+})
+
+test('createBalanceHistory 采样不足时返回 insufficient', () => {
+  const h = createBalanceHistory()
+  h.push(10, 0)
+  assert.equal(h.rate('CNY').trend, 'insufficient')
+})
+
+test('createBalanceHistory 时间跨度过短不给结论', () => {
+  const h = createBalanceHistory()
+  h.push(10, 0)
+  h.push(9.9, 10_000) // 仅 10 秒
+  assert.equal(h.rate('CNY').trend, 'insufficient')
+})
+
+test('createBalanceHistory 超出容量时滚掉最老的采样', () => {
+  const h = createBalanceHistory({ capacity: 3 })
+  for (let i = 0; i < 10; i++) h.push(100 - i, i * 3600_000)
+  const rate = h.rate('CNY')
+  assert.equal(rate.sampleCount, 3)
+})
+
+test('projectForClient 透传 burnRate', () => {
+  const rate = { perHour: 1, hoursLeft: 10, sampleCount: 3, trend: 'down', currency: 'CNY' }
+  const p = projectForClient({
+    ok: true, isAvailable: true,
+    balances: [{ currency: 'CNY', total: '10', granted: '0', toppedUp: '10' }],
+    checkedAt: new Date().toISOString(),
+  }, rate)
+  assert.deepEqual(p.burnRate, rate)
 })
