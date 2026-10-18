@@ -132,6 +132,50 @@ COVERED_YEARS      // 已收录完整日历的年份
 
 > 浏览器可能限制自动播放，首次点击后才会解锁音频，这是浏览器策略而非插件问题。
 
+### 语音与声音克隆 🆕
+
+桌宠可以用你喜欢的音色说话：点击摸鱼时念一句撒娇语，打开页面时打招呼。
+
+#### 能做什么
+
+- **多种声源**：百度免费接口、Azure 神经语音、火山引擎豆包、OpenAI 兼容服务、任意自定义 URL 模板
+- **手机自带语音**：直接调系统 TTS 引擎，零网络、零成本
+- **本地声音克隆**：上传一段 3–20 秒的你说话的音视频，自动提取音频、自动识别文字，之后桌宠就用你的音色朗读任意文本
+- **语种切换**：跟随声源 / 中文 / English / 日本語 / 한국어
+- **点击音频策略**：自动（语音优先）/ 只用语音 / 只用音效 / 两个都播，默认不会叠音
+
+#### 本地克隆怎么工作
+
+全部在本机完成，不联网、不需要账号：
+
+```
+你上传音视频
+  → ffmpeg 抽出音频（自动去画面轨、转 24kHz 单声道）
+  → SenseVoice 识别参考文本
+  → ZipVoice 用该音色合成任意文本
+```
+
+需要先装好依赖和模型（约 160MB）：
+
+```bash
+pip install sherpa-onnx numpy imageio-ffmpeg
+```
+
+模型放到 `~/.dsh/fish-pet/models/`（或用插件配置 `cloneModelDir` 指定）：
+
+```
+~/.dsh/fish-pet/models/
+├── sherpa-onnx-zipvoice-distill-int8-zh-en-emilia/   # 克隆 TTS
+├── vocos_24khz.onnx                                  # 声码器
+└── sherpa-onnx-sense-voice-*-int8-*/                 # 可选：自动识别参考文本
+```
+
+模型来自开源项目 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)，请按其授权使用。
+
+#### 播放前先确认音频完整
+
+为避免「话说一半没声了」，插件会等音频 `canplaythrough`、校验时长后才开始播（最多等 12 秒，超时也会播），并在播完后检查是否播到结尾。
+
 ### 消耗速率估算
 
 桌宠会记住最近若干次余额采样，估算**按当前速度还能用多久**，显示在余额下方（例如「约剩 2天1小时」，悬停可看平均消耗与采样数）。
@@ -371,8 +415,47 @@ exec node /path/to/dsh/bin.js "$@"
 
 ### 关于桌宠图片
 
-仓库里的 `pet.png` 是使用者提供的角色图。**如果你要公开发布，请确认你拥有该图片的使用权**，或替换成自己的图。替换方法：把 `dsh-plugin-fish-pet/pet.png` 换成同名 PNG 即可，建议透明背景、竖向比例。
+**本仓库不附带任何角色图片**。没有 `pet.png` 时，插件会返回一张内置的占位小鱼 SVG（代码里自绘，无第三方素材），保证开箱就能看到桌宠。
 
+换成自己的形象有两种方式：
+
+1. **菜单里上传**（推荐）：长按/双击桌宠 → 外观 → 更换形象，支持 PNG / JPG / GIF / WebP
+2. **放文件**：把 `pet.png` 放到 `dsh-plugin-fish-pet/` 目录下即可覆盖内置占位图
+
+如果你用了网上的角色图，请自行确认授权后再分发。
+
+### 关于第三方运行时（Live2D）
+
+Live2D 需要 `pixi.js` 与 Live2D Cubism Core 两个运行时文件，它们有各自的授权条款，**不随本仓库分发**。想用 Live2D 的话，把运行时放到插件目录：
+
+```
+dsh-plugin-fish-pet/assets/live2d/
+├── pixi.min.js
+├── live2dcubismcore.min.js
+└── cubism4.min.js
+```
+
+缺这些文件时，Live2D 相关功能不可用，其它功能不受影响（测试会自动跳过对应用例）。
+
+### 关于音色库
+
+`lib/voice-library.js` 在仓库里是**空数组**。具体音色（例如某家服务商的 `zh_female_xxx`）属于各家平台的内容，且各人喜好差异大，所以不预置。
+
+想加自己的常用音色，在数组里按格式补条目即可，插件代码不用改：
+
+```js
+export const VOICE_LIBRARY = [
+  {
+    id: 'voice:volc:zh_female_example_bigtts', // 必须以 voice: 开头
+    name: '我的常用音色',
+    provider: 'volc',                          // volc / azure / openai / ...
+    voice: 'zh_female_example_bigtts',         // 平台自己的音色标识
+    tags: ['中文', '女声'],                     // 搜索标签
+  },
+]
+```
+
+---
 ---
 
 ## 自定义节假日
