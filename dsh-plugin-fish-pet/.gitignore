@@ -7,3 +7,10 @@ node_modules/
 # 上传/缓存垃圾
 *.log
 .DS_Store
+
+# 本机素材：角色图片与第三方 Live2D 运行时不上传
+pet.png
+assets/
+
+# 本地声音克隆模型（体积大，按 README 自行下载）
+models/
